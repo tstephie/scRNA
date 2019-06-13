@@ -1,0 +1,58 @@
+scRNA Pipeline v1 notes
+
+Needed packages:
+Seurat, dplyr, magrittr, pheatmap, RColorBrewer, scales, umap (need to figure out with python)
+* need to set reticulate directory before importing packages *
+
+Needed variables:
+mouse/human cell cycle genes
+mouse or human data
+
+Workflow:
+* steps 1-3 need to be done outside of functions *
+1) load file (find file address(es) w/ list.files())
+  a) if have more than one file then put as list
+2) create Seurat object(s) 
+  a) list2env to make objects 
+  b) add any metadata to objects
+3) merge objects together w/ cell-ids added to front
+  a) only needed when have more than 1 file 
+
+4) QC
+  a) PercentageFeatureSet for mitochondrial genes (mt for mouse and MT for human)
+  b) VlnPlot (nCount/nUMI, nFeature/nGene, percent.mito) --> save
+  c) FeatureScatter (nCount vs. nFeature, nCount vs. percent.mito) --> save
+5) based on QC, filter cells if needed
+  a) subset 
+6) Processing
+  a) NormalizeData
+  b) FindVariableFeatures --> save
+  c) ScaleData w/ CellCycleScoring
+    i) based on 2000 varaible genes --> faster
+  d) PCA
+    i) decide how many pc's to use
+  ds) if think will have batch effect
+    i) use appropriate batch correction software
+  e) FindNeighbors based on pc's
+  f) FindClusters
+  g) RunUMAP based on pc's
+    i) visualize on DimPlot
+7) Labeling
+  a) auto labeling
+    i) function needed to be made
+  b) manual labeling
+    i) FeaturePlot/Dotplot
+8) DE
+  a) FindMarker (b/w 2 groups) or FindAllMarkers (all groups/clusters)
+  b) DoHeatmap or pheatmap --> use data slot
+    maybe scale.data if doesn't look good
+* If need more filtering, go back to step 4 or remove trash clusters * 
+9) Subsetting
+  depends on what want to subset
+  if want to find subclusters --> start at step 6
+  if have already wanted clusters --> continue
+  DE/heatmap/other things
+
+
+
+
