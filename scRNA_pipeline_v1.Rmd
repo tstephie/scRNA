@@ -14,7 +14,64 @@ library(magrittr)
 library(pheatmap)
 library(RColorBrewer)
 library(scales)
+library(data.table)
+
+# Load umap
+Sys.setenv(PATH= paste("C:/Users/Stephanie/Anaconda3/envs/r-reticulate/Library/bin",Sys.getenv()["PATH"],sep=";"))
+Sys.setenv(RETICULATE_PYTHON = "C:/Users/Stephanie/Anaconda3/envs/r-reticulate/python.exe")
+library(reticulate)
+use_condaenv("r-reticulate")
+py_config()
+import("umap")
 ```
+
+Load cell cycle genes (mouse or human choices only)
+``` {r}
+species <- readline(prompt = "What species are you working with?\n")
+
+if (species == 'human') {
+  s_genes <- cc.genes$s.genes
+  g2m_genes <- cc.genes$g2m.genes
+}
+else {  # mouse
+  readRDS(("~/Rao's Lab/Single Cell/single_cell/mouse_cell_cycle_genes/mouse_cell_cycle_genes.rds")
+  s_genes <- mouse_cell_cycle_genes$s.genes
+  g2m_genes <- mouse_cell_cycle_genes$g2m.genes
+}
+```
+
+Load data and create Seurat objects (first time)
+```{r}
+
+n_files <- readline("How many files do you have? ")
+
+files <- c()
+files <- sapply(1:n_files, function(i) files <- c(files, choose.dir(caption = paste("Directory", i, 
+                                                                                    sep = " "))))
+
+# Save directories in case you want to go back to this step
+fwrite(as.list(files), file = "directories.txt")
+
+
+
+
+# Create Seurat objects
+# names must in order of directories/data
+object_names <- unlist(strsplit(readline(prompt = "Object names (separate by ', ')"),split = ', '))
+project_names <- unlist(strsplit(readline(prompt = "Project names (separate by ', ')"),split = ', '))
+
+object_list <- list()
+object_list <- sapply(1:n_files, function(i) object_list <- append(object_list, object_names[i] = CreateSeuratObject(Read10X(files[i]), project = project_names[i], min.cells = 3, min.features = 100)))
+```
+
+Load data and create Seurat objects (after first time)
+``` {r}
+files <- c(fread(file.choose(), sep = ',', header = F, stringsAsFactors = F))
+files <- unname(unlist(files))
+```
+
+
+
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)

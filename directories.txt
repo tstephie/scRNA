@@ -1,0 +1,1 @@
+C:\Users\Stephanie\Documents\Rao's Lab\Single Cell\single_cell\Meggie\KO\raw_feature_bc_matrix,C:\Users\Stephanie\Documents\Rao's Lab\Single Cell\single_cell\Meggie\WT\raw_feature_bc_matrix
