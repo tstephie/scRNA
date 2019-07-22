@@ -1,0 +1,15 @@
+scRNA pipeline draft
+
+1) load data 
+	can be raw data or filtered data (from CellRanger, etc.)
+	also need to load cell cycle genes (depends on species)
+	merge data
+		can do this later if have a lot of datasets
+2) QC
+	a) UMI
+	b) genes
+		can ignore if want max genes for analysis but it can potential affect downstream analysis 
+	c) mitochondrial genes
+	d)* ambient gene expression
+		SoupX or ignore strong ambient genes?
+3) Processing
