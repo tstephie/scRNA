@@ -12,4 +12,19 @@ scRNA pipeline draft
 	c) mitochondrial genes
 	d)* ambient gene expression
 		SoupX or ignore strong ambient genes?
-3) Processing
+3) Normalization
+4) Data Correction
+	a) biological/technical batch correction 
+	b) cell cycle regression
+	c) imputation?
+5) Feature selection
+6) Dimension reduction
+7) Visualization
+	a) UMAP
+	b) trajectory inference?
+8)Downstream analysis
+	a) clustering
+	b) cluster annotation
+		i) DE and manual gene marker selection
+		ii) automated annotation
+			scmap, Garnett
