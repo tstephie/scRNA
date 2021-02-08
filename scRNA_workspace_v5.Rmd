@@ -31,12 +31,13 @@ library(SeuratData)
 
 # Parallelization
 Can be used for:
-- NormalizeData
-- ScaleData
-- JackStraw
-- FindMarkers
-- FindIntegrationAnchors
-- FindClusters (over multiple resolutions)
+
+* NormalizeData
+* ScaleData
+* JackStraw
+* FindMarkers
+* FindIntegrationAnchors
+* FindClusters (over multiple resolutions)
 ```{r, eval=FALSE}
 library(future)
 
@@ -46,7 +47,10 @@ plan()
 ```
 
 # Importing Data
+This pipeline starts by importing data that is outputed by CellRanger (https://support.10xgenomics.com/single-cell-gene-expression/software/pipelines/latest/what-is-cell-ranger). You will get a UMI (unique molecular index) count matrix from CellRanger. 
+
 There are 3 ways to import the data:
+
 1) Folder that contains matrix.mtx, features.tsv, and barcodes.tsv (must be labeled these or it will not work) [Read10X()] 
 2) .hdf5 (.h5) count matrix file [Read10X_h5()]
 Both of these files are outputs from CellRanger.
@@ -66,6 +70,12 @@ mats <- sapply(path, function(x) Read10X(x))
 # mats <- sapply(1:length(sample_names), function(x) Read10X(path[x])) 
 
 ```
+
+Notes:
+
+* genes.tsv indicates that he data is from CellRanger v2 and features.tsv indicates that the data is from CellRanger v3 when importing. It's just easier to change the name to features to be consistent with newer pipelines. 
+* sometimes it works if you unzip .gz files, but sometimes it doesn't. I would make it a habit to keep it .gz. 
+
 ## Read10X_h5
 GEO accessions for example files: GSM3489183, GSM4735548
 ```{r, eval=FALSE}
@@ -123,6 +133,11 @@ seurat_object <- CreateSeuratObject(mats[['GSM3308717_C04']], project = 'project
 
 ```
 
+Notes:
+
+* min.cells: genes that are present in at least a n cells
+* min.features: cells that are expressed in at least n genes
+
 ## multiple matrices examples (multiple samples)
 Choice 1: create separate objects and then merge
 ```{r, eval=FALSE}
@@ -152,6 +167,19 @@ merged <- merge(obs[[1]], c(obs[[2]]), add.cell.ids = c('GSM3308717_C04', 'GSM33
 ```{r , echo=FALSE, out.width = '50%'}
 knitr::include_graphics("example_datasets/figures/seurat_object_example.png")
 ```
+
+Notes (important slots):
+
+* assays: contains different single-cell assay experimental data (ex: RNA, ATAC, etc.)
+    + counts: raw counts
+    + data: data worked on (this is be normalized throughout pipeline)
+    + scale.data: scaled data
+    + var.features: variable features (found through FindVariableFeatures)
+* meta.data: metadata; can include categorical and numerical data
+* active.assay: current assay slot used
+* active.ident: current metadata/identity used
+* graphs: contains KNN and SNN graphs (from FindNeighbors)
+* reductions: contains PCA, TSNE, and UMAP data
 
 # Adding and Replacing Metadata
 ```{r, eval=FALSE}
@@ -250,6 +278,18 @@ panc8_sub <- subset(panc8, idents = c('celseq', 'celseq2', 'smartseq2'))
 
 ## Merge -> Pre-process -> Downstream Analysis
 ### QC
+Notes:
+
+* It is standard to look at nCount/nUMI, nFeature/nGene, and percentage of mitochondrial reads for each cell. 
+* nCount: total # of molecules detected within a cell
+* nFeature: total # of genes detected in each cell.
+
+Can also check percentage of ribosomal reads (I won't be using this in this pipeline, but it is an option you can use):
+```{r, eval=FALSE}
+# human reads start with RPS or RPL
+panc8_sub$percent.rb <- PercentageFeatureSet(panc8_sub, pattern = '^RP[SL]')
+
+```
 
 #### Before Filtering
 ```{r, eval=FALSE}
@@ -298,6 +338,11 @@ plot1 + plot2
 ```{r , echo=FALSE, out.width = '100%'}
 knitr::include_graphics("example_datasets/figures/merge_process_figures/qc_featurescatter_after.png")
 ```
+
+Note:
+
+* QC done here places a hard threshold where you set one threshold for all samples
+* Can do a more lenient QC by setting a different threshold for each sample. You can see an example in "Pre-Process -> Merge -> Downstream" -> QC Section.
 
 ### Normalization
 ```{r, eval=FALSE}
@@ -1125,8 +1170,8 @@ knitr::include_graphics("example_datasets/figures/integrate_map_figures/transfer
 SCTransform method takes the place of functions NormalizeData --> FindVariableFeatures --> ScaleData. 
 
 Links for more information about SCTransform:
-- https://hbctraining.github.io/scRNA-seq/lessons/06_SC_SCT_and_integration.html
-- https://satijalab.org/seurat/articles/sctransform_vignette.html
+* https://hbctraining.github.io/scRNA-seq/lessons/06_SC_SCT_and_integration.html
+* https://satijalab.org/seurat/articles/sctransform_vignette.html
 
 ```{r, warning=FALSE, message=FALSE, eval=FALSE}
 # install example data
@@ -1232,6 +1277,10 @@ knitr::include_graphics("example_datasets/figures/sctransform_figures/sctransfor
 panc8_batch_markers <- FindAllMarkers(object = panc8, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25, test.use = 'LR', latent.vars = 'tech')
 
 ```
+
+Note:
+
+* DE is done on the "data" slot. If you have batch corrected values, do not use corrected values for DE. It is better to include batch variables (latent.vars) in the model when running DE. 
 
 # Other Visualizations
 Other visualization options and functions can be found here: https://satijalab.org/seurat/archive/v3.0/visualization_vignette.html
