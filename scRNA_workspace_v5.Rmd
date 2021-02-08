@@ -1,0 +1,1330 @@
+---
+title: "Seurat v5 Pipeline"
+output:
+  html_document:
+    df_print: paged
+    toc: true
+    toc_depth: 5
+    toc_float: true
+editor_options:
+  chunk_output_type: console
+---
+
+# Packages
+```{r, warning=FALSE, message=FALSE, eval=FALSE}
+# important packages
+library(tidyverse)
+library(Seurat)
+#library(scImpute)
+library(harmony)
+library(pheatmap)
+library(RColorBrewer)
+library(scales)
+library(cowplot)
+library(patchwork)
+#library(ShinyCell)
+
+# example package
+library(SeuratData)
+
+```
+
+# Parallelization
+Can be used for:
+- NormalizeData
+- ScaleData
+- JackStraw
+- FindMarkers
+- FindIntegrationAnchors
+- FindClusters (over multiple resolutions)
+```{r, eval=FALSE}
+library(future)
+
+plan("multiprocess", workers = 3)
+options(future.globals.maxSize = 1500 * 1024^2)
+plan()
+```
+
+# Importing Data
+There are 3 ways to import the data:
+1) Folder that contains matrix.mtx, features.tsv, and barcodes.tsv (must be labeled these or it will not work) [Read10X()] 
+2) .hdf5 (.h5) count matrix file [Read10X_h5()]
+Both of these files are outputs from CellRanger.
+
+3) .h5ad count matrix file. These are AnnData files from scanpy. [SeuratDisk]
+
+
+## Read10X
+```{r, , eval=FALSE}
+sample_names <- c('GSM3308717_C04', 'GSM3308718_C05')
+path <- sapply(sample_names, function (x) paste('example_datasets', x, '', sep = '/'))
+
+# Choice 1: gives list names are sample names but colnames in matrices are just barcodes
+mats <- sapply(path, function(x) Read10X(x)) 
+
+# # Choice 2: gives only colnames in matrices with sample name in front of barcode (don't run)
+# mats <- sapply(1:length(sample_names), function(x) Read10X(path[x])) 
+
+```
+## Read10X_h5
+GEO accessions for example files: GSM3489183, GSM4735548
+```{r, eval=FALSE}
+# # don't run 
+# path <- c('example_datasets/h5_examples/GSM3489183_IPF_01_filtered_gene_bc_matrices_h5.h5', 'example_datasets/h5_examples/GSM4735548_H18_19086_TB.raw_gene_bc_matrices_h5.h5')
+# 
+# # gives only barcodes as colnames in matrices 
+# mats <- sapply(path, function(x) Read10X_h5(x))
+# 
+# # relabeling list names and colnames (colnames optional)
+# names(mats) <- c('GSM3489183', 'GSM4735548')
+
+```
+
+## Reading H5AD Files
+There is ReadH5AD() function but it doesn't work. Instead use SeuratDisk package. This will turn the matrix into a Seurat object, so you do not need to do the steps to make Seurat object yourself. 
+```{r, eval=FALSE}
+# # requires SeuratDisk package
+# library(SeuratDisk)
+# 
+# # download example dataset
+# url <- "https://seurat.nygenome.org/pbmc3k_final.h5ad"
+# curl::curl_download(url, paste('example_datasets/h5ad_examples', basename(url), sep = '/'))
+# 
+# Convert(paste('example_datasets/h5ad_examples', basename(url), sep = '/'), dest = 'h5seurat', overwrite = T)
+# mat <- LoadH5Seurat('example_datasets/h5ad_examples/pbmc3k_final.h5seurat')
+```
+
+# Dropout Correction/Imputation
+```{r, eval=FALSE}
+# # Dropout correction
+# # THIS NEEDS A LOT OF MEMORY TO RUN!
+# # Will take some time to run
+# combined.data <- cbind(KOFIL.data, WTFIL.data) # merge data
+# saveRDS(combined.data, file = 'raw_count_combined_KPC.rds')
+# count_path <- "./raw_count_combined_KPC.rds"
+# infile="rds"
+# outfile="rds"
+# drop_thre=0.5 # threshold to determine dropout values
+# ncores=1 # if working on Windows, set to 1
+# out_dir="./"
+# combined_scimpute <- scimpute(count_path, infile, outfile, out_dir, 
+#                                    labeled = FALSE,  drop_thre, ncores = ncores, 
+#                                    type = "count", Kcluster = 5)
+# scimpute_count <- readRDS("scimpute_count.rds")
+# # Create seurat object with dropout corrected data
+# merge <- CreateSeuratObject(counts = scimpute_count, project = 'MERGED',  min.cells = 3, min.features = 100)
+
+```
+
+# Creating Seurat Objects
+## one matrix example (one sample)
+```{r, eval=FALSE}
+seurat_object <- CreateSeuratObject(mats[['GSM3308717_C04']], project = 'project', min.cells = 3, min.features = 100)
+
+```
+
+## multiple matrices examples (multiple samples)
+Choice 1: create separate objects and then merge
+```{r, eval=FALSE}
+# creating objects
+ob1 <- CreateSeuratObject(mats[['GSM3308717_C04']], project = 'C04', min.cells = 3, min.features = 100)
+ob2 <- CreateSeuratObject(mats[['GSM3308718_C05']], project = 'C05', min.cells = 3, min.features = 100)
+
+# merge objects
+## Make sure to add cell.ids. This will add labels to front of cell names so the cells don't get mixed up when merging (will probably cause an error if don't).
+## make sure labels are in order of how objects are being merged
+merged <- merge(ob1, ob2, add.cell.ids = c('GSM3308717_C04', 'GSM3308718_C05'))
+
+```
+
+Choice 2: Automate
+```{r, eval=FALSE}
+projects <- c('C04', 'C05')
+samples <- names(mats)
+obs <- sapply(1:length(mats), function(i) CreateSeuratObject(mats[[samples[i]]], project = projects[i], min.cells = 3, min.features = 100))
+
+merged <- merge(obs[[1]], c(obs[[2]]), add.cell.ids = c('GSM3308717_C04', 'GSM3308718_C05'))
+## if have more than 2 samples, put one sample in the first parameter and then the rest in the second in c(). 
+### ex: merge(ob1, c(ob2, ob3, ob4))
+
+```
+
+```{r , echo=FALSE, out.width = '50%'}
+knitr::include_graphics("example_datasets/figures/seurat_object_example.png")
+```
+
+# Adding and Replacing Metadata
+```{r, eval=FALSE}
+# Load in or get metadata
+## Making up metadata here just for example
+
+# Adding one description
+merged$id <- Idents(merged) # store current identity
+merged$mt1 <- rep(c(.5, .8), times = c(4500, 4500))
+
+# Add directly if have metadata for each cell
+## must have cell names as row names
+metadata <- data.frame(group = rep(c(1, 2), times = c(4500,4500)), treat = rep(c('A', 'B', 'C'), times = c(2600, 1000, 5400)), row.names = colnames(merged))
+  
+merged <- AddMetaData(merged, metadata)
+
+# Can replace metadata by using one of the ways above. For the table method, it will both add new metadata and replace any existing metadata. Need to make sure that you have the same number of cells for object and metadata table.
+
+```
+
+# Exploring Seurat Object
+```{r, eval=FALSE}
+# dimensions count table in object
+## genes x cells
+dim(merged)
+head(colnames(merged))
+head(rownames(merged))
+ncol(merged)
+nrow(merged)
+
+# Changing identities
+## Can be important for visualization and testing
+Idents(merged) <- 'group'
+Idents(merged, cells = 1:10) <- 'treat' # subset labels 
+
+# Checking current identity
+levels(merged)
+
+# Making metadata table
+table(merged$treat)
+
+# Rename label in current identity
+Idents(merged) <- 'treat'
+new_labels <- c('B' = 'A', 'C' = 'D')
+merged <- RenameIdents(merged, new_labels)
+
+```
+
+# Manipulating Seurat Object
+```{r, eval=FALSE}
+# subsetting object
+## based on logical expression
+merged_sub <- subset(merged, subset = group == 1)
+merged_sub <- subset(merged, subset = COL6A3 > 0)
+
+## based on current identity
+levels(merged)
+merged_sub <- subset(merged, idents = c('A'))
+# merged_sub <- subset(merged, idents = c('A'), invert = T) get everything except
+
+# getting data
+## can pull out genes and metadata for all cells
+## ident = current identity 
+## will pull out from "data" slot by default
+merged_data <- FetchData(merged, vars= c('COL6A', 'PPY', 'COL3A1', 'group', 'ident'))
+
+# getting cells
+## gives names of cells that matches expression or identity
+merged_cells <- WhichCells(merged, idents = 'A')
+#merged_cells <- WhichCells(merged, idents = 'A', invert = T)
+merged_cells <- WhichCells(merged, expression = COL6A > 0)
+
+```
+
+# Exporting Seurat Object
+```{r, eval=FALSE}
+saveRDS(merged, file = 'scrnaseq_merged.rds')
+
+```
+
+# Standard Pipeline
+This example dataset comes from Seurat (in SeuratData package). It contains 8 human pancreatic cancer sets, which have been sequenced with 5 different technologies. 
+```{r, warning=FALSE, message=FALSE, eval=FALSE}
+# install example data
+# InstallData('panc8')
+data('panc8')
+panc8 <- UpdateSeuratObject(panc8) # need to update cause old version
+
+table(panc8$dataset)
+
+panc8_sub <- subset(panc8, idents = c('celseq', 'celseq2', 'smartseq2'))
+
+#rm(panc8)
+
+```
+
+## Merge -> Pre-process -> Downstream Analysis
+### QC
+
+#### Before Filtering
+```{r, eval=FALSE}
+# check percentage of mitochondrial reads
+## human reads start with MT-
+panc8_sub$percent.mt <- PercentageFeatureSet(panc8_sub, pattern = "^MT-")
+
+VlnPlot(panc8_sub, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = .5)
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/merge_process_figures/qc_vlnplot_before.png")
+```
+
+```{r, eval=FALSE}
+plot1 <- FeatureScatter(object = panc8_sub, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(object = panc8_sub, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/merge_process_figures/qc_featurescatter_before.png")
+```
+
+#### After Filtering
+```{r, eval=FALSE}
+panc8_sub <- subset(panc8_sub, subset = nCount_RNA < 2e6)
+
+VlnPlot(panc8_sub, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = .5)
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/merge_process_figures/qc_vlnplot_after.png")
+```
+
+```{r, eval=FALSE}
+plot1 <- FeatureScatter(object = panc8_sub, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(object = panc8_sub, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/merge_process_figures/qc_featurescatter_after.png")
+```
+
+### Normalization
+```{r, eval=FALSE}
+panc8_sub <- NormalizeData(panc8_sub, normalization.method = 'LogNormalize', scale.factor = 10000)
+# panc8 <- NormalizeData(panc8) is the same as above
+
+```
+
+### Finding Variable Features
+#### VST
+This is the current algorithm used to find variable features.
+```{r, eval=FALSE}
+## find subset of features that exhibit high cell-to-cell variation in the dataset
+## vst --> loess.span, clip.max, nfeaturesmerge 
+panc8_sub <- FindVariableFeatures(panc8_sub, selection.method = 'vst', loess.span = .3, nfeatures = 2000)
+### FindVariableFeatures(panc8_sub) is the same above
+
+top10 <- head(VariableFeatures(panc8_sub), 10)
+plot1 <- VariableFeaturePlot(panc8_sub)
+plot2 <- LabelPoints(plot = plot1, points = top10)
+plot1 + plot2
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/merge_process_figures/variablefeatures_plot.png")
+```
+
+#### Mean Var
+Old algorithm
+```{r, eval=FALSE}
+# ## mean.var.plot --> mean.function, dispersion.function, num.bin, mean/dispersion.cutoff
+# panc8 <- FindVariableFeatures(panc8, selection.method = 'mean.var.plot', mean.cutoff = c(0.0125,Inf), dispersion.cutoff = c(0.5,Inf))
+# 
+# top10 <- head(VariableFeatures(panc8), 10)
+# plot1 <- VariableFeaturePlot(panc8)
+# plot2 <- LabelPoints(plot = plot1, points = top10)
+# plot1 + plot2
+```
+
+### Scaling
+```{r, eval=FALSE}
+# OPTION 1 (all genes):
+## can take a long time to run
+panc8_sub <- ScaleData(panc8_sub, features = rownames(panc8_sub), vars.to.regress = c('nCount_RNA'))
+
+# OPTION 2 (variable genes):
+## default features parameter is variable genes
+# panc8_sub <- ScaleData(panc8_sub, vars.to.regress = 'nCount_RNA')
+```
+
+### PCA
+```{r, eval=FALSE}
+# DIMENSIONAL REDUCTION: PCA
+## Can control the number of pcs that you want to calculate w/ npcs
+panc8_sub <- RunPCA(object = panc8_sub, features = VariableFeatures(object = panc8_sub), 
+                nfeatures.print = 5)
+
+# Choosing how many PCs for clustering
+# visualizing pcs
+ElbowPlot(object = panc8_sub, ndims = 50)
+
+# JackStraw if you want
+panc8_sub <- JackStraw(object = panc8_sub, num.replicate = 100)
+panc8_sub <- ScoreJackStraw(object = panc8_sub, dims = 1:20)
+JackStrawPlot(object = panc8_sub, dims = 1:20)
+
+# # Calculating --> until get over 90% variance
+# ## old way
+# stdev <- panc8_sub[['pca']]@stdev
+# var <- (panc8_sub[['pca']]@stdev)^2
+# sum(var[1:28])/sum(var) 
+
+# Quantitative approach
+## point where pcs only contribute 5% of stdev and cumulatively contribute 90% of stdev
+pct <- panc8_sub@reductions$pca@stdev / sum(panc8_sub@reductions$pca@stdev) * 100 # % variation associated w/ each pc
+cum <- cumsum(pct) # cumulative % for each pc
+co1 <- which(cum > 90 & pct < 5)[1] # upper threshold
+
+## point where percent change in variation b/w consecutive pcs is < 0.1%
+co2 <- sort(which((pct[1:length(pct)-1] - pct[2:length(pct)]) > .1), decreasing = T)[1] + 1 # difference b/w variation of pc and subsequent pc
+# lower threshold
+
+### use minimum of 2 metrics 
+pcs <- min(co1, co2)
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/merge_process_figures/elbowplot.png")
+```
+
+```{r, eval=FALSE}
+# Check for any batch effects (mainly cell cycle batch)
+# Cell cycle genes (if want to do cell cycle correction) (human)
+## mouse is somewhere else but I have downloaded it
+s_genes <- cc.genes.updated.2019$s.genes
+g2m_genes <- cc.genes.updated.2019$g2m.genes
+
+# if have old gene names can use this function to change
+cc.genes.updated.2019$s.genes <- UpdateSymbolList(cc.genes.updated.2019$s.genes)
+cc.genes.updated.2019$g2m.genes <- UpdateSymbolList(cc.genes.updated.2019$g2m.genes)
+
+panc8_sub <- RunPCA(object = panc8_sub, features = c(s_genes, g2m_genes), 
+                nfeatures.print = 5, reduction.name = 'cc_pca')
+DimPlot(panc8_sub, reduction = 'cc_pca', group.by = 'tech')
+### don't need to do cell cycle correction with this example
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/merge_process_figures/cell_cycle_pca.png")
+```
+
+#### Cell Cycle Correction
+```{r, eval=FALSE}
+# use if want all cell cycle signals regressed out
+panc8_sub <- CellCycleScoring(object = panc8_sub, s.features = s_genes, g2m.features = g2m_genes, set.ident = TRUE)
+panc8_sub <- ScaleData(object = panc8_sub, features = all.genes, 
+                   vars.to.regress = c("nCount", 'S.Score', 'G2M.Score')) 
+### use if want some cell cycle signals regressed out (cycling vs. non-cycling will be save)
+### mainly used if looking at differentiating processes
+panc8_sub$CC.Difference <- panc8_sub$S.Score - panc8_sub$G2M.Score
+panc8_sub <- ScaleData(object = panc8_sub, features = all.genes, 
+                   vars.to.regress = c("nCount", "CC.Difference"))
+
+# Run PCA again with cell cycle regressed data
+panc8_sub <- RunPCA(object = panc8_sub, features = VariableFeatures(object = panc8_sub), 
+                nfeatures.print = 5)
+```
+
+### Batch Correction w/ Harmony
+```{r, eval=FALSE}
+# BATCH CORRECTION
+## if know that you have batch effect from either previous info or from running through clustering and visualization
+## using harmony package
+panc8_sub <- RunHarmony(panc8_sub, group.by.vars = c('tech'), dims.use = 1:pcs, verbose = F)
+
+```
+
+### Not Batch Corrected
+#### Clustering
+```{r, eval=FALSE}
+panc8_sub <- FindNeighbors(panc8_sub, dims = 1:pcs, k.param = 20)
+panc8_sub <- FindClusters(panc8_sub, resolution = 0.5)
+head(Idents(panc8_sub), 5)
+# store clusters in other metadata slot
+panc8_sub$ex_unbatch_clusters <- Idents(panc8_sub)
+
+# cluster will be stored in seurat_clusters and every time you run FindClusters it will overwrite seurat_clusters metadata
+
+```
+
+#### TSNE/UMAP
+```{r, eval=FALSE}
+# VISUALIZATION: TSNE/UMAP
+## TSNE example
+panc8_sub <- RunTSNE(panc8_sub, dims = 1:pcs, reduction.name = 'tsne_unbatch')
+DimPlot(object = panc8_sub, reduction = 'tsne_unbatch', group.by = c('ex_unbatch_clusters','tech','celltype'))
+
+## UMAP example
+panc8_sub <- RunUMAP(panc8_sub, dims = 1:pcs, reduction.name = 'umap_unbatch')
+DimPlot(object = panc8_sub, reduction = 'umap_unbatch', group.by = c('ex_unbatch_clusters','tech','celltype'))
+### if want to use current identity, use 'ident' in group.by
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/merge_process_figures/tsne_unbatch.png")
+knitr::include_graphics("example_datasets/figures/merge_process_figures/umap_unbatch.png")
+```
+
+### Batch Corrected
+#### Clustering
+```{r, eval=FALSE}
+panc8_sub <- FindNeighbors(panc8_sub, dims = 1:pcs, k.param = 20, reduction = 'harmony')
+panc8_sub <- FindClusters(panc8_sub, resolution = 0.5)
+head(Idents(panc8_sub), 5)
+# store clusters in other metadata slot
+panc8_sub$ex_batch_clusters <- Idents(panc8_sub)
+
+```
+
+#### TSNE/UMAP
+```{r, eval=FALSE, eval=FALSE}
+### if batch corrected:
+panc8_sub <- RunTSNE(panc8_sub, dims = 1:pcs, reduction = 'harmony', reduction.name = 'batch_tsne')
+DimPlot(object = panc8_sub, reduction = 'batch_tsne', group.by = c('ex_batch_clusters','tech','celltype'))
+
+panc8_sub <- RunUMAP(panc8_sub, dims = 1:pcs, reduction = 'harmony', reduction.name = 'batch_umap')
+DimPlot(object = panc8_sub, reduction = 'batch_umap', group.by = c('ex_batch_clusters','tech','celltype'))
+
+```
+
+```{r , out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/merge_process_figures/tsne_batch.png")
+knitr::include_graphics("example_datasets/figures/merge_process_figures/umap_batch.png")
+```
+
+```{r, eval=FALSE}
+## Visualizing expression 
+### can use these parameters to change plots: features, idents, split.by, group.by
+FeaturePlot(panc8_sub, reduction = 'batch_umap', features = c('REG1A', 'PPY', 'SST', 'GHRL', 'VWF', 'SOX10'))
+DotPlot(panc8_sub, features = c('REG1A', 'PPY', 'SST', 'GHRL', 'VWF', 'SOX10'))
+VlnPlot(panc8_sub, features = c('REG1A', 'PPY', 'SST', 'GHRL', 'VWF', 'SOX10'))
+
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/merge_process_figures/express_featureplot.png")
+knitr::include_graphics("example_datasets/figures/merge_process_figures/express_dotplot.png")
+knitr::include_graphics("example_datasets/figures/merge_process_figures/express_vlnplot.png")
+```
+
+### DE
+```{r, eval=FALSE}
+# DIFFERENTIAL EXPRESSION
+## markers for cluster 0 (will compare cluster 1 to all other clusters)
+cluster1_markers <- FindMarkers(object = panc8_sub, ident.1 = 0, min.pct = 0.25)
+head(x = cluster1_markers, n = 5)
+
+## markers for all clusters
+panc8_sub_markers <- FindAllMarkers(object = panc8_sub, only.pos = TRUE, min.pct = 0.25, 
+                                logfc.threshold = 0.25)
+panc8_sub_markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_log2FC)
+
+```
+
+### Conserved Features
+Useful in finding conserved features among all conditions in dataset (ex: test and control). It can help if have any unknown clusters. 
+```{r, eval=FALSE}
+# one cluster
+panc8_sub_conserved_markers <- FindConservedMarkers(panc8_sub, ident.1 = 0, grouping.var = 'tech', only.pos = T)
+
+# multiple clusters
+get_conserved <- function(cluster) {
+  FindConservedMarkers(panc8_sub, ident.1 = cluster, grouping.var = 'tech', only.pos = T) %>% rownames_to_column(var = 'gene') %>% cbind(cluster_id = cluster, .)
+}
+
+panc8_sub_conserved_markers <- map_dfr(c(0,1), get_conserved)
+
+```
+
+## Pre-Process -> Merge -> Downstream
+```{r, eval=FALSE}
+# install example data
+# InstallData('panc8')
+data('panc8')
+panc8 <- UpdateSeuratObject(panc8) # need to update cause old version
+
+table(panc8$dataset)
+
+panc8_sub <- SplitObject(panc8, split.by = 'dataset')
+panc8_sub <- panc8_sub[c('celseq', 'celseq2', 'smartseq2')]
+
+#rm(panc8)
+
+```
+
+### QC
+#### Before filtering
+```{r, eval=FALSE}
+for (i in 1:length(panc8_sub)) {
+  panc8_sub[[i]][['percent.mt']] <- PercentageFeatureSet(panc8_sub[[i]], pattern = "^MT-")
+}
+
+plot_list <- list()
+for (i in 1:length(panc8_sub)) {
+  plot_list[[i]] <- VlnPlot(panc8_sub[[i]], features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = .5)
+}
+
+plot_list[[1]] / plot_list[[2]] / plot_list[[3]]
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/process_merge_figures/qc_vlnplot_before.png")
+```
+
+```{r, eval=FALSE}
+plot_list <- list()
+for (i in 1:length(panc8_sub)) {
+  plot_list[[i]] <- FeatureScatter(object = panc8_sub[[i]], feature1 = "nCount_RNA", feature2 = "percent.mt") + FeatureScatter(object = panc8_sub[[i]], feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+}
+
+plot_list[[1]] / plot_list[[2]] / plot_list[[3]]
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/process_merge_figures/qc_featurescatter_before.png")
+```
+
+#### After filtering
+```{r, eval=FALSE}
+panc8_sub[[1]] <- subset(panc8_sub[[1]], subset = nFeature_RNA < 8500 & nCount_RNA < 50000)
+panc8_sub[[2]] <- subset(panc8_sub[[2]], subset = nFeature_RNA < 11000 & nCount_RNA < 1e5)
+panc8_sub[[3]] <- subset(panc8_sub[[3]], subset = nFeature_RNA < 11250 & nCount_RNA < 2e6)
+
+plot_list <- list()
+for (i in 1:length(panc8_sub)) {
+  plot_list[[i]] <- VlnPlot(panc8_sub[[i]], features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = .5)
+}
+
+plot_list[[1]] / plot_list[[2]] / plot_list[[3]]
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/process_merge_figures/qc_vlnplot_after.png")
+```
+
+```{r, eval=FALSE}
+plot_list <- list()
+for (i in 1:length(panc8_sub)) {
+  plot_list[[i]] <- FeatureScatter(object = panc8_sub[[i]], feature1 = "nCount_RNA", feature2 = "percent.mt") + FeatureScatter(object = panc8_sub[[i]], feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+}
+
+plot_list[[1]] / plot_list[[2]] / plot_list[[3]]
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/process_merge_figures/qc_featurescatter_after.png")
+```
+
+### Merge --> Harmony
+#### Merge objects
+```{r, eval=FALSE}
+# Merge objects together
+panc8_sub_merge <- merge(panc8_sub[[1]], c(panc8_sub[[2]], panc8_sub[[3]]))
+
+```
+
+#### Normalization
+```{r, eval=FALSE}
+panc8_sub_merge <- NormalizeData(panc8_sub_merge)
+
+```
+
+#### Finding Variable Features
+```{r, eval=FALSE}
+## find subset of features that exhibit high cell-to-cell variation in the dataset
+## vst --> loess.span, clip.max, nfeaturesmerge 
+panc8_sub_merge <- FindVariableFeatures(panc8_sub_merge, selection.method = 'vst', loess.span = .3, nfeatures = 2000)
+
+top10 <- head(VariableFeatures(panc8_sub_merge), 10)
+plot1 <- VariableFeaturePlot(panc8_sub_merge)
+plot2 <- LabelPoints(plot = plot1, points = top10)
+plot1 + plot2
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/process_merge_figures/merge_harmony_variablefeatures.png")
+```
+
+#### Scaling
+```{r, eval=FALSE}
+# OPTION 1 (all genes):
+panc8_sub_merge <- ScaleData(panc8_sub_merge, features = rownames(panc8_sub_merge), vars.to.regress = c('nCount_RNA'))
+
+```
+
+#### PCA
+```{r, eval=FALSE}
+# DIMENSIONAL REDUCTION: PCA
+## Can control the number of pcs that you want to calculate w/ npcs
+panc8_sub_merge <- RunPCA(object = panc8_sub_merge, features = VariableFeatures(object = panc8_sub_merge), 
+                nfeatures.print = 5)
+
+# Choosing how many PCs for clustering
+# visualizing pcs
+ElbowPlot(object = panc8_sub_merge, ndims = 50)
+
+# JackStraw if you want
+panc8_sub_merge <- JackStraw(object = panc8_sub_merge, num.replicate = 100)
+panc8_sub_merge <- ScoreJackStraw(object = panc8_sub_merge, dims = 1:20)
+JackStrawPlot(object = panc8_sub_merge, dims = 1:20)
+
+# # Calculating --> until get over 90% variance
+# stdev <- panc8_sub_merge[['pca']]@stdev
+# var <- (panc8_sub_merge[['pca']]@stdev)^2
+# sum(var[1:28])/sum(var) 
+
+# Quantitative approach
+## point where pcs only contribute 5% of stdev and cumulatively contribute 90% of stdev
+pct <- panc8_sub_merge@reductions$pca@stdev / sum(panc8_sub_merge@reductions$pca@stdev) * 100 # % variation associated w/ each pc
+cum <- cumsum(pct) # cumulative % for each pc
+co1 <- which(cum > 90 & pct < 5)[1] # upper threshold
+
+## point where percent change in variation b/w consecutive pcs is < 0.1%
+co2 <- sort(which((pct[1:length(pct)-1] - pct[2:length(pct)]) > .1), decreasing = T)[1] + 1 # difference b/w variation of pc and subsequent pc
+# lower threshold
+
+### use minimum of 2 metrics 
+pcs <- min(co1, co2)
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/process_merge_figures/merge_harmony_elbowplot.png")
+```
+
+```{r, eval=FALSE}
+# Check for any batch effects (mainly cell cycle batch)
+# Cell cycle genes (if want to do cell cycle correction) (human)
+## mouse is somewhere else but I have downloaded it
+s_genes <- cc.genes.updated.2019$s.genes
+g2m_genes <- cc.genes.updated.2019$g2m.genes
+
+# if have old gene names can use this function to change
+cc.genes.updated.2019$s.genes <- UpdateSymbolList(cc.genes.updated.2019$s.genes)
+cc.genes.updated.2019$g2m.genes <- UpdateSymbolList(cc.genes.updated.2019$g2m.genes)
+
+panc8_sub_merge <- RunPCA(object = panc8_sub_merge, features = c(s_genes, g2m_genes), 
+                nfeatures.print = 5, reduction.name = 'cc_pca')
+DimPlot(panc8_sub_merge, reduction = 'cc_pca', group.by = 'tech')
+### don't need to do cell cycle correction with this example
+```
+
+##### Cell Cycle Correction
+```{r, eval=FALSE}
+# use if want all cell cycle signals regressed out
+# panc8_sub_merge <- CellCycleScoring(object = panc8_sub_merge, s.features = s_genes, g2m.features = g2m_genes, set.ident = TRUE)
+# panc8_sub_merge <- ScaleData(object = panc8_sub_merge, features = all.genes, 
+#                    vars.to.regress = c("nCount", 'S.Score', 'G2M.Score')) 
+# ### use if want some cell cycle signals regressed out (cycling vs. non-cycling will be save)
+# ### mainly used if looking at differentiating processes
+# panc8_sub_merge$CC.Difference <- panc8_sub_merge$S.Score - panc8_sub_merge$G2M.Score
+# panc8_sub_merge <- ScaleData(object = panc8_sub_merge, features = all.genes, 
+#                    vars.to.regress = c("nCount", "CC.Difference"))
+
+# # Run PCA again with cell cycle regressed data
+# panc8_sub_merge <- RunPCA(object = panc8_sub_merge, features = VariableFeatures(object = panc8_sub_merge), 
+#                 nfeatures.print = 5)
+```
+
+#### Batch Correction w/ Harmony
+```{r, eval=FALSE}
+# BATCH CORRECTION
+## if know that you have batch effect from either previous info or from running through clustering and visualization
+## using harmony package
+panc8_sub_merge <- RunHarmony(panc8_sub_merge, group.by.vars = c('tech'), dims.use = 1:pcs, verbose = F)
+
+```
+
+#### Not Batch Corrected
+##### Clustering
+```{r, eval=FALSE}
+panc8_sub_merge <- FindNeighbors(panc8_sub_merge, dims = 1:pcs, k.param = 20)
+panc8_sub_merge <- FindClusters(panc8_sub_merge, resolution = 0.5)
+head(Idents(panc8_sub_merge), 5)
+# store clusters in other metadata slot
+panc8_sub_merge$ex_unbatch_clusters <- Idents(panc8_sub_merge)
+
+# cluster will be stored in seurat_clusters and every time you run FindClusters it will overwrite seurat_clusters metadata
+
+```
+
+##### TSNE/UMAP
+```{r, eval=FALSE}
+# VISUALIZATION: TSNE/UMAP
+## TSNE example
+panc8_sub_merge <- RunTSNE(panc8_sub_merge, dims = 1:pcs, reduction.name = 'tsne_unbatch')
+DimPlot(object = panc8_sub_merge, reduction = 'tsne_unbatch', group.by = c('ex_unbatch_clusters','tech','celltype'))
+
+## UMAP example
+panc8_sub_merge <- RunUMAP(panc8_sub_merge, dims = 1:pcs, reduction.name = 'umap_unbatch')
+DimPlot(object = panc8_sub_merge, reduction = 'umap_unbatch', group.by = c('ex_batch_clusters','tech','celltype'))
+### if want to use current identity, use 'ident' in group.by
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/process_merge_figures/merge_harmony_unbatch_tsne.png")
+knitr::include_graphics("example_datasets/figures/process_merge_figures/merge_harmony_unbatch_umap.png")
+```
+
+#### Batch Corrected
+##### Clustering
+```{r, eval=FALSE}
+panc8_sub_merge <- FindNeighbors(panc8_sub_merge, dims = 1:pcs, k.param = 20, reduction = 'harmony')
+panc8_sub_merge <- FindClusters(panc8_sub_merge, resolution = 0.5)
+head(Idents(panc8_sub_merge), 5)
+# store clusters in other metadata slot
+panc8_sub_merge$ex_batch_clusters <- Idents(panc8_sub_merge)
+
+```
+
+##### TSNE/UMAP
+```{r, eval=FALSE}
+### if batch corrected:
+panc8_sub_merge <- RunTSNE(panc8_sub_merge, dims = 1:pcs, reduction = 'harmony', reduction.name = 'batch_tsne')
+DimPlot(object = panc8_sub_merge, reduction = 'batch_tsne', group.by = c('ex_batch_clusters','tech','celltype'))
+
+panc8_sub_merge <- RunUMAP(panc8_sub_merge, dims = 1:pcs, reduction = 'harmony', reduction.name = 'batch_umap')
+DimPlot(object = panc8_sub_merge, reduction = 'batch_umap', group.by = c('ex_batch_clusters','tech','celltype'))
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/process_merge_figures/merge_harmony_batch_umap.png")
+```
+
+```{r, eval=FALSE}
+## Visualizing expression 
+### can use these parameters to change plots: features, idents, split.by, group.by
+FeaturePlot(panc8_sub_merge, reduction = 'batch_umap', features = c('REG1A', 'PPY', 'SST', 'GHRL', 'VWF', 'SOX10'))
+DotPlot(panc8_sub_merge, features = c('REG1A', 'PPY', 'SST', 'GHRL', 'VWF', 'SOX10'))
+VlnPlot(panc8_sub_merge, features = c('REG1A', 'PPY', 'SST', 'GHRL', 'VWF', 'SOX10'))
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/process_merge_figures/merge_harmony_featureplot.png")
+knitr::include_graphics("example_datasets/figures/process_merge_figures/merge_harmony_dotplot.png")
+knitr::include_graphics("example_datasets/figures/process_merge_figures/merge_harmony_vlnplot_features.png")
+```
+
+#### DE
+```{r, eval=FALSE}
+# DIFFERENTIAL EXPRESSION
+## markers for cluster 0 (will compare cluster 1 to all other clusters)
+cluster1_markers <- FindMarkers(object = panc8_sub_merge, ident.1 = 0, min.pct = 0.25)
+head(x = cluster1_markers, n = 5)
+
+## markers for all clusters
+panc8_sub_merge_markers <- FindAllMarkers(object = panc8_sub_merge, only.pos = TRUE, min.pct = 0.25, 
+                                logfc.threshold = 0.25)
+panc8_sub_merge_markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_log2FC)
+
+```
+
+#### Conserved Features
+Useful in finding conserved features among all conditions in dataset (ex: test and control). It can help if have any unknown clusters. 
+```{r, eval=FALSE}
+# one cluster
+panc8_sub_merge_conserved_markers <- FindConservedMarkers(panc8_sub_merge, ident.1 = 0, grouping.var = 'tech', only.pos = T)
+
+# multiple clusters
+get_conserved <- function(cluster) {
+  FindConservedMarkers(panc8_sub_merge, ident.1 = cluster, grouping.var = 'tech', only.pos = T) %>% rownames_to_column(var = 'gene') %>% cbind(cluster_id = cluster, .)
+}
+
+panc8_sub_merge_conserved_markers <- map_dfr(c(0,1), get_conserved)
+
+```
+
+### Further Pre-processing -> Integrate
+#### Normalization & Variable Features
+```{r, eval=FALSE}
+## vst --> loess.span, clip.max, nfeaturesmerge 
+for (i in 1:length(panc8_sub)) {
+  panc8_sub[[i]] <- NormalizeData(panc8_sub[[i]], verbose = F)
+  panc8_sub[[i]] <- FindVariableFeatures(panc8_sub[[i]], selection.method = 'vst', nfeatures = 2000, verbose = F)
+}
+
+```
+
+```{r, eval=FALSE}
+# ## mean.var.plot --> mean.function, dispersion.function, num.bin, mean/dispersion.cutoff
+# for (i in 1:length(panc8_sub)) {
+#   panc8_sub[[i]] <- NormalizeData(panc8_sub[[i]], verbose = F)
+#   panc8_sub[[i]] <- FindVariableFeatures(panc8_sub[[i]], selection.method = 'mean.var.plot', mean.cutoff = c(0.0125,Inf), dispersion.cutoff = c(0.5,Inf))
+# }
+
+```
+
+##### Variable Features Plots
+```{r, eval=FALSE}
+top10_list <- sapply(1:length(panc8_sub), function(i) { head(VariableFeatures(panc8_sub[[i]]), 10)})
+
+plot_list <- list()
+for (i in 1:length(panc8_sub)) {
+  p1 <- VariableFeaturePlot(panc8_sub[[i]])
+  p2 <- LabelPoints(plot = p1, points = top10_list[,1])
+  plot_list[[i]] <- p1+p2
+}
+
+plot_list[[1]] + plot_list[[2]] + plot_list[[3]]
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/process_merge_figures/integrate_variablefeatures.png")
+```
+
+#### Integration
+```{r, eval=FALSE}
+## identify anchors 
+panc8_sub_anchors <- FindIntegrationAnchors(object.list = panc8_sub, dims = 1:30)
+## integrate objects
+panc8_sub_integrate <- IntegrateData(anchorset = panc8_sub_anchors, dims = 1:30)
+
+## change assay to integrated slot
+DefaultAssay(panc8_sub_integrate) <- 'integrated'
+
+```
+
+#### Scaling
+```{r, eval=FALSE}
+# OPTION 1 (all genes):
+panc8_sub_integrate <- ScaleData(panc8_sub_integrate, features = rownames(panc8_sub_integrate), vars.to.regress = c('nCount_RNA'))
+
+```
+
+#### PCA
+```{r, eval=FALSE}
+# DIMENSIONAL REDUCTION: PCA
+## Can control the number of pcs that you want to calculate w/ npcs
+panc8_sub_integrate <- RunPCA(object = panc8_sub_integrate, features = VariableFeatures(object = panc8_sub_integrate), 
+                nfeatures.print = 5)
+
+# Choosing how many PCs for clustering
+# visualizing pcs
+ElbowPlot(object = panc8_sub_integrate, ndims = 50)
+
+# JackStraw if you want
+panc8_sub_integrate <- JackStraw(object = panc8_sub_integrate, num.replicate = 100)
+panc8_sub_integrate <- ScoreJackStraw(object = panc8_sub_integrate, dims = 1:20)
+JackStrawPlot(object = panc8_sub_integrate, dims = 1:20)
+
+# # Calculating --> until get over 90% variance
+# ## old way
+# stdev <- panc8_sub[['pca']]@stdev
+# var <- (panc8_sub[['pca']]@stdev)^2
+# sum(var[1:28])/sum(var) 
+
+# Quantitative approach
+## point where pcs only contribute 5% of stdev and cumulatively contribute 90% of stdev
+pct <- panc8_sub_integrate@reductions$pca@stdev / sum(panc8_sub_integrate@reductions$pca@stdev) * 100 # % variation associated w/ each pc
+cum <- cumsum(pct) # cumulative % for each pc
+co1 <- which(cum > 90 & pct < 5)[1] # upper threshold
+
+## point where percent change in variation b/w consecutive pcs is < 0.1%
+co2 <- sort(which((pct[1:length(pct)-1] - pct[2:length(pct)]) > .1), decreasing = T)[1] + 1 # difference b/w variation of pc and subsequent pc
+# lower threshold
+
+### use minimum of 2 metrics 
+pcs <- min(co1, co2)
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/process_merge_figures/integrate_elbowplot.png")
+```
+
+```{r, eval=FALSE}
+# Check for any batch effects (mainly cell cycle batch)
+# Cell cycle genes (if want to do cell cycle correction) (human)
+## mouse is somewhere else but I have downloaded it
+s_genes <- cc.genes.updated.2019$s.genes
+g2m_genes <- cc.genes.updated.2019$g2m.genes
+
+# if have old gene names can use this function to change
+cc.genes.updated.2019$s.genes <- UpdateSymbolList(cc.genes.updated.2019$s.genes)
+cc.genes.updated.2019$g2m.genes <- UpdateSymbolList(cc.genes.updated.2019$g2m.genes)
+
+panc8_sub_integrate <- RunPCA(object = panc8_sub_integrate, features = c(s_genes, g2m_genes), 
+                nfeatures.print = 5, reduction.name = 'cc_pca')
+DimPlot(panc8_sub_integrate, reduction = 'cc_pca', group.by = 'tech')
+### don't need to do cell cycle correction with this example
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/process_merge_figures/integrate_cc_pca.png")
+```
+
+##### Cell Cycle Correction
+```{r, eval=FALSE}
+# # use if want all cell cycle signals regressed out
+# panc8_sub_integrate <- CellCycleScoring(object = panc8_sub_integrate, s.features = s_genes, g2m.features = g2m_genes, set.ident = TRUE)
+# panc8_sub_integrate <- ScaleData(object = panc8_sub_integrate, features = all.genes,
+#                    vars.to.regress = c("nCount", 'S.Score', 'G2M.Score'))
+# ### use if want some cell cycle signals regressed out (cycling vs. non-cycling will be save)
+# ### mainly used if looking at differentiating processes
+# panc8_sub_integrate$CC.Difference <- panc8_sub_integrate$S.Score - panc8_sub_integrate$G2M.Score
+# panc8_sub_integrate <- ScaleData(object = panc8_sub_integrate, features = all.genes,
+#                    vars.to.regress = c("nCount", "CC.Difference"))
+# 
+# # Run PCA again with cell cycle regressed data
+# panc8_sub_integrate <- RunPCA(object = panc8_sub_integrate, features = VariableFeatures(object = panc8_sub_integrate),
+#                 nfeatures.print = 5)
+
+```
+
+#### Clustering
+```{r, eval=FALSE}
+panc8_sub_integrate <- FindNeighbors(panc8_sub_integrate, dims = 1:pcs, k.param = 20)
+panc8_sub_integrate <- FindClusters(panc8_sub_integrate, resolution = 0.5)
+head(Idents(panc8_sub_integrate), 5)
+# store clusters in other metadata slot
+panc8_sub_integrate$ex_integrate_clusters <- Idents(panc8_sub_integrate)
+
+# cluster will be stored in seurat_clusters and every time you run FindClusters it will overwrite seurat_clusters metadata
+
+```
+
+#### TSNE/UMAP
+```{r, eval=FALSE}
+# VISUALIZATION: TSNE/UMAP
+## TSNE example
+panc8_sub_integrate <- RunTSNE(panc8_sub_integrate, dims = 1:pcs, reduction.name = 'tsne_integrate')
+DimPlot(object = panc8_sub_integrate, reduction = 'tsne_integrate', group.by = c('ex_integrate_clusters','tech','celltype'))
+
+## UMAP example
+panc8_sub_integrate <- RunUMAP(panc8_sub_integrate, dims = 1:pcs, reduction.name = 'umap_integrate')
+DimPlot(object = panc8_sub_integrate, reduction = 'umap_integrate', group.by = c('ex_integrate_clusters','tech','celltype'))
+### if want to use current identity, use 'ident' in group.by
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/process_merge_figures/integrate_tsne.png")
+knitr::include_graphics("example_datasets/figures/process_merge_figures/integrate_umap.png")
+```
+
+```{r, eval=FALSE}
+## Visualizing expression 
+### can use these parameters to change plots: features, idents, split.by, group.by
+FeaturePlot(panc8_sub_integrate, reduction = 'integrate_umap', features = c('REG1A', 'PPY', 'SST', 'GHRL', 'VWF', 'SOX10'))
+DotPlot(panc8_sub_integrate, features = c('REG1A', 'PPY', 'SST', 'GHRL', 'VWF', 'SOX10'))
+VlnPlot(panc8_sub_integrate, features = c('REG1A', 'PPY', 'SST', 'GHRL', 'VWF', 'SOX10'))
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/process_merge_figures/integrate_featureplot.png")
+knitr::include_graphics("example_datasets/figures/process_merge_figures/integrate_dotplot.png")
+knitr::include_graphics("example_datasets/figures/process_merge_figures/integrate_vlnplot_features.png")
+```
+
+#### DE
+```{r, eval=FALSE}
+# DIFFERENTIAL EXPRESSION
+## markers for cluster 0 (will compare cluster 1 to all other clusters)
+cluster1_markers <- FindMarkers(object = panc8_sub_integrate, ident.1 = 0, min.pct = 0.25)
+head(x = cluster1_markers, n = 5)
+
+## markers for all clusters
+panc8_sub_integrate_markers <- FindAllMarkers(object = panc8_sub_integrate, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+panc8_sub_integrate_markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_log2FC)
+```
+
+#### Conserved Features
+Useful in finding conserved features among all conditions in dataset (ex: test and control). It can help if have any unknown clusters. 
+```{r, eval=FALSE}
+# one cluster
+panc8_sub_integrate_conserved_markers <- FindConservedMarkers(panc8_sub_integrate, ident.1 = 0, grouping.var = 'tech', only.pos = T)
+
+# multiple clusters
+get_conserved <- function(cluster) {
+  FindConservedMarkers(panc8_sub_integrate, ident.1 = cluster, grouping.var = 'tech', only.pos = T) %>% rownames_to_column(var = 'gene') %>% cbind(cluster_id = cluster, .)
+}
+
+panc8_sub_integrate_conserved_markers <- map_dfr(c(0,1), get_conserved)
+```
+
+# Integration and Label Transfer
+```{r, echo = F, eval=FALSE}
+# install data
+#InstallData('panc8')
+data('panc8')
+
+# split object by tech
+pancreas.list <- SplitObject(panc8, split.by = 'tech')
+pancreas.list <- pancreas.list[c('celseq', 'celseq2', 'fluidigmc1', 'smartseq2')]
+
+```
+
+## Normalization and Finding Variable Features
+``` {r, eval=FALSE}
+# Normalize and find variable features for each tech object
+for (i in 1:length(pancreas.list)) {
+  pancreas.list[[i]] <- NormalizeData(pancreas.list[[i]], verbose = F)
+  pancreas.list[[i]] <- FindVariableFeatures(pancreas.list[[i]], selection.method = 'vst', nfeatures = 2000, verbose = F)
+}
+
+```
+
+## Making Reference Dataset
+``` {r, eval=FALSE}
+# make reference object
+reference.list <- pancreas.list[c('celseq', 'celseq2', 'smartseq2')]
+## identify anchors 
+pancreas.anchors <- FindIntegrationAnchors(object.list = reference.list, dims = 1:30)
+## integrate objects
+pancreas.integrated <- IntegrateData(anchorset = pancreas.anchors, dims = 1:30)
+## scaling and PCA
+DefaultAssay(pancreas.integrated) <- 'integrated'
+pancreas.integrated <- ScaleData(pancreas.integrated, verbose = F)
+pancreas.integrated <- RunPCA(pancreas.integrated, npcs = 30, verbose = F)
+pancreas.integrated <- RunUMAP(pancreas.integrated, reduction = 'pca', dims = 1:30)
+## visualization
+p1 <- DimPlot(pancreas.integrated, reduction = 'umap', group.by = 'tech')
+p2 <- DimPlot(pancreas.integrated, reduction = 'umap', group.by = 'celltype', repel = T) 
+p1 + p2
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/integrate_map_figures/reference_umap.png")
+```
+
+## Label Tranferring
+``` {r, eval=FALSE}
+# classifying cell type based on integrated reference
+pancreas.query <- pancreas.list[['fluidigmc1']]
+pancreas.anchors <- FindTransferAnchors(reference = pancreas.integrated, query = pancreas.query, dims = 1:30)
+predictions <- TransferData(anchorset = pancreas.anchors, refdata = pancreas.integrated$celltype, dims = 1:30)
+pancreas.query <- AddMetaData(pancreas.query, metadata = predictions)
+## check predictions
+pancreas.query$prediction.match <- pancreas.query$predicted.id == pancreas.query$celltype
+table(pancreas.query$prediction.match)
+## check predictions with canonical markers
+table(pancreas.query$predicted.id)
+VlnPlot(pancreas.query, c("REG1A", "PPY", "SST", "GHRL", "VWF", "SOX10"), group.by = 'predicted.id')
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/integrate_map_figures/transfer_feature_vlnplot.png")
+```
+
+# SCTransform Integration Pipeline
+SCTransform method takes the place of functions NormalizeData --> FindVariableFeatures --> ScaleData. 
+
+Links for more information about SCTransform:
+- https://hbctraining.github.io/scRNA-seq/lessons/06_SC_SCT_and_integration.html
+- https://satijalab.org/seurat/articles/sctransform_vignette.html
+
+```{r, warning=FALSE, message=FALSE, eval=FALSE}
+# install example data
+# InstallData('panc8')
+data('panc8')
+panc8 <- UpdateSeuratObject(panc8) # need to update cause old version
+
+table(panc8$dataset)
+
+panc8_sub <- SplitObject(panc8, split.by = 'dataset')
+panc8_sub <- panc8_sub[c('celseq', 'celseq2', 'smartseq2')]
+
+#rm(panc8)
+```
+
+## Cell Cycle Correction
+In SCTransform pipeline, you need to check for cell cycle before running SCTransform. 
+```{r, eval=FALSE}
+cc_object <- merge(panc8_sub[[1]], c(panc8_sub[[2]], panc8_sub[[3]]))
+cc_object <- NormalizeData(cc_object)
+
+# cell cycle genes
+s_genes <- cc.genes.updated.2019$s.genes
+g2m_genes <- cc.genes.updated.2019$g2m.genes
+## if have old gene names can use this function to change
+cc.genes.updated.2019$s.genes <- UpdateSymbolList(cc.genes.updated.2019$s.genes)
+cc.genes.updated.2019$g2m.genes <- UpdateSymbolList(cc.genes.updated.2019$g2m.genes)
+
+cc_object <- CellCycleScoring(cc_object, s.features = s_genes, g2m.features = g2m_genes)
+
+cc_object <- FindVariableFeatures(cc_object)
+cc_object <- ScaleData(cc_object) # either with all genes or variable features
+cc_object <- RunPCA(cc_object)
+DimPlot(cc_object, reduction = 'pca', group.by = 'Phase')
+
+# no problems with cell cycle correction
+
+# if have cell cycle batch effects, then you will need to include that in vars.to.regress parameter in SCTransform function
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/sctransform_figures/sctransform_cc_pca.png")
+```
+
+## Processing
+### QC
+```{r, eval=FALSE}
+# starting from split object list 
+for (i in 1:length(panc8_sub)) {
+  panc8_sub[[i]][['percent.mt']] <- PercentageFeatureSet(panc8_sub[[i]], pattern = "^MT-")
+}
+
+plot_list <- list()
+for (i in 1:length(panc8_sub)) {
+  plot_list[[i]] <- VlnPlot(panc8_sub[[i]], features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = .5)
+}
+
+plot_list[[1]] / plot_list[[2]] / plot_list[[3]]
+
+# any filtering before doing the rest
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/sctransform_figures/sctransform_qc_vlnplot.png")
+```
+
+### SCTransform
+```{r, eval=FALSE}
+for (i in 1:length(panc8_sub)) {
+  panc8_sub[[i]] <- SCTransform(panc8_sub[[i]], vars.to.regress = 'nCount_RNA')
+}
+# can use glmGamPoi package for faster sctransform
+
+```
+
+### Integration --> Downstream Analysis 
+```{r, eval=FALSE}
+features <- SelectIntegrationFeatures(panc8_sub, nfeatures = 3000)
+panc8_sub <- PrepSCTIntegration(panc8_sub, anchor.features = features)
+anchors <- FindIntegrationAnchors(panc8_sub, normalization.method = 'SCT', anchor.features = features)
+panc8_sub_SCT_integrate <- IntegrateData(anchors, normalization.method = 'SCT')
+
+panc8_sub_SCT_integrate <- RunPCA(panc8_sub_SCT_integrate)
+panc8_sub_SCT_integrate <- RunUMAP(panc8_sub_SCT_integrate, dims = 1:30)
+
+panc8_sub_SCT_integrate <- FindNeighbors(panc8_sub_SCT_integrate, dims = 1:30)
+panc8_sub_SCT_integrate <- FindClusters(panc8_sub_SCT_integrate)
+
+DimPlot(panc8_sub_SCT_integrate, group.by = c('ident', 'tech','celltype'))
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/sctransform_figures/sctransform_integrate_umap.png")
+```
+
+# Batch Correction DE
+```{r, eval=FALSE}
+# DO NOT RUN
+# only use if using methods negbinom, LR, MAST, DESeq2
+panc8_batch_markers <- FindAllMarkers(object = panc8, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25, test.use = 'LR', latent.vars = 'tech')
+
+```
+
+# Other Visualizations
+Other visualization options and functions can be found here: https://satijalab.org/seurat/archive/v3.0/visualization_vignette.html
+
+```{r, warning=FALSE, message=FALSE, eval=FALSE}
+# install example data
+panc8_sub <- readRDS('example_datasets/example_objects/panc8_sub_process_merge_integrate.rds')
+
+```
+
+```{r, eval=FALSE}
+# Get top n genes for each cluster through DE
+Idents(panc8_sub) <- 'celltype'
+markers <- FindAllMarkers(panc8_sub)
+top10 <- markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/de_table_example.png")
+```
+
+## Heatmaps
+### DoHeatmap
+```{r, eval=FALSE}
+DoHeatmap(object = panc8_sub, features = top10$gene, size = 2, group.by = 'celltype') + NoLegend()
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/visualization_figures/doheatmap.png")
+```
+
+### pheatmap
+```{r, eval=FALSE}
+## make sure when fetching data that there is no repeated genes
+cells <- FetchData(object = panc8_sub, vars = c(unique(top10$gene), 'celltype'))
+cells <- cells[order(cells$celltype),]
+
+## creating annotation bars
+anno <- data.frame(cell_type = cells$celltype)
+rownames(anno) <- rownames(cells)
+
+## rescaling
+cells <- apply(cells[,1:(ncol(cells)-1)], MARGIN = 2, FUN = function(x) (squish(x, range = c(-2.5,2.5))))
+
+pheatmap(mat = t(cells), show_colnames = F,
+         cluster_rows = F, cluster_col = F,
+         annotation_col = anno, fontsize = 7,
+         color = colorRampPalette(colors = c('#8A2BE2','#000000','#FFFF00'))(250))
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/visualization_figures/pheatmap.png")
+```
+
+## Feature Plots
+```{r, eval = FALSE}
+FeaturePlot(panc8_sub, features = top10$gene[1:6])
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/visualization_figures/featureplot_feature.png")
+```
+
+## Violin Plots
+```{r, eval = FALSE}
+VlnPlot(panc8_sub, features = top10$gene[1:6])
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/visualization_figures/vlnplot_features.png")
+```
+
+## Dot Plots
+```{r, eval = FALSE}
+DotPlot(panc8_sub, features = top10$gene[1:6]) + RotatedAxis()
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/visualization_figures/dotplot_features.png")
+```
+
+## Ridge Plots
+```{r, eval = FALSE}
+RidgePlot(panc8_sub, features = top10$gene[1:6])
+
+```
+
+```{r , echo=FALSE, out.width = '100%'}
+knitr::include_graphics("example_datasets/figures/visualization_figures/ridgeplot_features.png")
+```
